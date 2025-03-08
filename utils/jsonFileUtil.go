@@ -77,7 +77,7 @@ func CopyDirSrc(src string, dest string) error {
 			return os.MkdirAll(destPath, info.Mode())
 		}
 
-		return copyFile(path, destPath)
+		return CopyFile(path, destPath)
 	})
 
 	// 处理复制结果
@@ -106,13 +106,19 @@ func CopyDirSrc(src string, dest string) error {
 	return nil
 }
 
-func copyFile(src, dest string) error {
+func CopyFile(src, dest string) error {
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("无法打开源文件: %v", err)
 	}
 	defer sourceFile.Close()
 
+	//  如果dest所在的文件夹不存在，则创建
+	if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			return fmt.Errorf("无法创建目标文件夹: %v", err)
+		}
+	}
 	destFile, err := os.Create(dest)
 	if err != nil {
 		return fmt.Errorf("无法创建目标文件: %v", err)
