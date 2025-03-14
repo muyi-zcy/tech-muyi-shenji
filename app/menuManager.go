@@ -338,10 +338,7 @@ func (mm *MenuManager) SaveMenuPage(appCode string, menuCode string, config inte
 		return fmt.Errorf("menu with Code %s is not lowCode type", menuCode)
 	}
 
-	err = utils.CopyFile(getAppDevPage(appCode, menuCode), getAppHistoryPage(appCode, menuCode))
-	if err != nil {
-		return fmt.Errorf("failed to copy menu page: %w", err)
-	}
+	utils.CopyFile(getAppDevPage(appCode, menuCode), getAppHistoryPage(appCode, menuCode))
 	err = utils.SaveJSONToFile(config, getAppDevPage(appCode, menuCode))
 	if err != nil {
 		return fmt.Errorf("failed to save menu page: %w", err)
