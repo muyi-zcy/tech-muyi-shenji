@@ -2,14 +2,11 @@ package app
 
 import (
 	"fmt"
-	"regexp"
 	"sync"
 	"tech-muyi-shenji/utils"
 )
 
-type MenuManager struct {
-	mu sync.RWMutex // 读写锁
-}
+type MenuManager struct{}
 
 var (
 	menuManagerInstance *MenuManager
@@ -29,10 +26,11 @@ func (mm *MenuManager) CreateMenu(appCode string, parentCode string, menuCode st
 	appLock.Lock(appCode)
 	defer appLock.Unlock(appCode)
 
-	// 判断menuCode是否满足规则：只能是大小写字母
-	valid := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(menuCode)
-	if !valid {
+	if !ValidResourceCode(menuCode) {
 		return nil, fmt.Errorf("menuCode only allows numbers, lowercase letters, uppercase letters, underscores, and hyphens")
+	}
+	if parentCode != "" && !ValidResourceCode(parentCode) {
+		return nil, fmt.Errorf("parentCode is invalid")
 	}
 
 	// menuType只能是MenuType内包含的枚举
@@ -57,22 +55,13 @@ func (mm *MenuManager) CreateMenu(appCode string, parentCode string, menuCode st
 		return nil, fmt.Errorf("failed to read menu info: %w", err)
 	}
 
-	// menuCode不可以重复，包括所有的子菜单
-	for _, menu := range menus {
-		if menu.MenuCode == menuCode {
-			return nil, fmt.Errorf("menu with Code %s already exists", menuCode)
-		}
-		if menu.Children != nil && len(menu.Children) > 0 {
-			for _, child := range menu.Children {
-				if child.MenuCode == menuCode {
-					return nil, fmt.Errorf("menu with Code %s already exists", menuCode)
-				}
-			}
-		}
+	existing := make(map[string]struct{})
+	collectMenuCodesDeep(menus, existing)
+	if _, dup := existing[menuCode]; dup {
+		return nil, fmt.Errorf("menu with Code %s already exists", menuCode)
 	}
 
 	if parentCode == "" {
-		// 如果parentCode 为空，则新增到根菜单
 		menus = append(menus, Menu{
 			MenuCode:  menuCode,
 			MenuLabel: menuLabel,
@@ -87,25 +76,19 @@ func (mm *MenuManager) CreateMenu(appCode string, parentCode string, menuCode st
 		if Group == MenuType(menuType) {
 			return nil, fmt.Errorf("child menu`s menuType only allows MenuImperative, MenuStaticPage, MenuTypeLink")
 		}
-		// 如果parentCode 不为空，则新增到对应菜单的子菜单
-		flag := false
-		for i, menu := range menus {
-			if menu.MenuCode == parentCode {
-				menus[i].Children = append(menu.Children, Menu{
-					MenuCode:  menuCode,
-					MenuLabel: menuLabel,
-					MenuPath:  menuPath,
-					MenuIcon:  menuIcon,
-					MenuType:  menuType,
-					Hide:      hide,
-					LinkUrl:   linkUrl,
-					Children:  []Menu{},
-				})
-				flag = true
-				break
-			}
+		child := Menu{
+			MenuCode:  menuCode,
+			MenuLabel: menuLabel,
+			MenuPath:  menuPath,
+			MenuIcon:  menuIcon,
+			MenuType:  menuType,
+			Hide:      hide,
+			LinkUrl:   linkUrl,
+			Children:  []Menu{},
 		}
-		if !flag {
+		var ok bool
+		menus, ok = appendChildDeep(menus, parentCode, child)
+		if !ok {
 			return nil, fmt.Errorf("parent menu with Code %s does not exist", parentCode)
 		}
 	}
@@ -130,39 +113,23 @@ func (mm *MenuManager) DeleteMenu(appCode string, menuCode string) (*[]Menu, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to read menu info: %w", err)
 	}
-	// 遍历删除对应的menuCode，如果menuCode对应的子菜单未清空，则无法删除
-	flag := false
-	for i, menu := range menus {
-		if menu.MenuCode == menuCode {
-			if len(menu.Children) > 0 {
-				return nil, fmt.Errorf("menu with Code %s has child menus, cannot delete", menuCode)
-			}
-			menus = append(menus[:i], menus[i+1:]...)
-			flag = true
-		}
-		if menu.Children != nil && len(menu.Children) > 0 {
-			for j, child := range menu.Children {
-				if child.MenuCode == menuCode {
-					menus[i].Children = append(menu.Children[:j], menu.Children[j+1:]...)
-					flag = true
-					break
-				}
-			}
-		}
-		if flag {
-			break
-		}
+	var found bool
+	menus, found, err = deleteMenuDeep(menus, menuCode)
+	if err != nil {
+		return nil, err
 	}
-	if flag {
-		err = utils.SaveJSONToFile(menus, getAppDevMenu(appCode))
-		if err != nil {
-			return nil, fmt.Errorf("failed to save menu info: %w", err)
-		}
-		pagePath := getAppDevPage(appCode, menuCode)
-		utils.RemoveFile(pagePath)
-		return &menus, nil
+	if !found {
+		return nil, fmt.Errorf("menu with Code %s does not exist", menuCode)
 	}
-	return nil, fmt.Errorf("menu with Code %s does not exist", menuCode)
+	err = utils.SaveJSONToFile(menus, getAppDevMenu(appCode))
+	if err != nil {
+		return nil, fmt.Errorf("failed to save menu info: %w", err)
+	}
+	pagePath := getAppDevPage(appCode, menuCode)
+	if err := utils.RemoveFile(pagePath); err != nil {
+		return nil, err
+	}
+	return &menus, nil
 }
 
 // 修改菜单名称、icon、显示隐藏
@@ -179,52 +146,16 @@ func (mm *MenuManager) UpdateMenu(appCode string, menuCode string, menuLabel str
 		return nil, fmt.Errorf("failed to read menu info: %w", err)
 	}
 
-	flag := false
-	for i, menu := range menus {
-		if menu.MenuCode == menuCode {
-			// 判断是否为空
-			if menuLabel != "" {
-				menus[i].MenuLabel = menuLabel
-			}
-			if menuIcon != "" {
-				menus[i].MenuIcon = menuIcon
-			}
-			if linkUrl != "" {
-				menus[i].LinkUrl = linkUrl
-			}
-			menus[i].Hide = hide
-			flag = true
-		}
-		if menu.Children != nil && len(menu.Children) > 0 {
-			for j, child := range menu.Children {
-				if child.MenuCode == menuCode {
-					if menuLabel != "" {
-						menus[i].Children[j].MenuLabel = menuLabel
-					}
-					if menuIcon != "" {
-						menus[i].Children[j].MenuIcon = menuIcon
-					}
-					if linkUrl != "" {
-						menus[i].Children[j].LinkUrl = linkUrl
-					}
-					menus[i].Children[j].Hide = hide
-					flag = true
-					break
-				}
-			}
-		}
-		if flag {
-			break
-		}
+	var ok bool
+	menus, ok = updateMenuDeep(menus, menuCode, menuLabel, menuIcon, hide, linkUrl)
+	if !ok {
+		return nil, fmt.Errorf("menu with Code %s does not exist", menuCode)
 	}
-	if flag {
-		err = utils.SaveJSONToFile(menus, getAppDevMenu(appCode))
-		if err != nil {
-			return nil, fmt.Errorf("failed to save menu info: %w", err)
-		}
-		return &menus, nil
+	err = utils.SaveJSONToFile(menus, getAppDevMenu(appCode))
+	if err != nil {
+		return nil, fmt.Errorf("failed to save menu info: %w", err)
 	}
-	return nil, fmt.Errorf("menu with Code %s does not exist", menuCode)
+	return &menus, nil
 }
 
 // 菜单排序，给出所有父子结构菜单结构排序（包括子菜单），需要保证新的结构不缺少、不新增
@@ -347,11 +278,22 @@ func (mm *MenuManager) SaveMenuPage(appCode string, menuCode string, config inte
 }
 
 func (mm *MenuManager) GetMenu(appCode string, version string) (interface{}, error) {
-	if !GetAppManagerInstance().IsAppDevExist(appCode) {
-		return "", fmt.Errorf("app with Code %s does not exist", appCode)
+	am := GetAppManagerInstance()
+	switch {
+	case version == "":
+		if !am.IsAppReleaseExist(appCode) {
+			return "", fmt.Errorf("app release for Code %s does not exist", appCode)
+		}
+	case version == "dev":
+		if !am.IsAppDevExist(appCode) {
+			return "", fmt.Errorf("app with Code %s does not exist", appCode)
+		}
+	default:
+		if !am.IsAppVersionExist(appCode, version) {
+			return "", fmt.Errorf("app version for Code %s does not exist", appCode)
+		}
 	}
 
-	//  读取配置，返回字符串
 	var config interface{}
 	var err error
 	if version == "" {
@@ -382,62 +324,23 @@ func (mm *MenuManager) RemoveMenu(appCode string, menuCode string, parentCode st
 		return fmt.Errorf("failed to read menu info: %w", err)
 	}
 
-	// 查找目标菜单
-	var targetMenu Menu
-	found := false
-	for i, menu := range menus {
-		if menu.MenuCode == menuCode {
-			targetMenu = menu
-			menus = append(menus[:i], menus[i+1:]...)
-			found = true
-			break
-		}
-		if menu.Children != nil && len(menu.Children) > 0 {
-			for j, child := range menu.Children {
-				if child.MenuCode == menuCode {
-					targetMenu = child
-					menus[i].Children = append(menu.Children[:j], menu.Children[j+1:]...)
-					found = true
-					break
-				}
-			}
-		}
-		if found {
-			break
-		}
+	if parentCode != "" && !ValidResourceCode(parentCode) {
+		return fmt.Errorf("parentCode is invalid")
 	}
 
+	var targetMenu Menu
+	var found bool
+	menus, targetMenu, found = extractMenuByCode(menus, menuCode)
 	if !found {
 		return fmt.Errorf("menu with Code %s does not exist", menuCode)
 	}
 
-	// 移动菜单
 	if parentCode == "" {
-		// 移动到根节点
 		menus = append(menus, targetMenu)
 	} else {
-		// 移动到指定父菜单下
-		parentFound := false
-		for i, menu := range menus {
-			if menu.MenuCode == parentCode {
-				menus[i].Children = append(menu.Children, targetMenu)
-				parentFound = true
-				break
-			}
-			if menu.Children != nil && len(menu.Children) > 0 {
-				for j, child := range menu.Children {
-					if child.MenuCode == parentCode {
-						menus[i].Children[j].Children = append(child.Children, targetMenu)
-						parentFound = true
-						break
-					}
-				}
-			}
-			if parentFound {
-				break
-			}
-		}
-		if !parentFound {
+		var ok bool
+		menus, ok = appendChildDeep(menus, parentCode, targetMenu)
+		if !ok {
 			return fmt.Errorf("parent menu with Code %s does not exist", parentCode)
 		}
 	}
@@ -452,11 +355,22 @@ func (mm *MenuManager) RemoveMenu(appCode string, menuCode string, parentCode st
 }
 
 func (mm *MenuManager) GetMenuPage(appCode string, version string, menuCode string) (interface{}, error) {
-	if !GetAppManagerInstance().IsAppDevExist(appCode) {
-		return "", fmt.Errorf("app with Code %s does not exist", appCode)
+	am := GetAppManagerInstance()
+	switch {
+	case version == "":
+		if !am.IsAppReleaseExist(appCode) {
+			return "", fmt.Errorf("app release for Code %s does not exist", appCode)
+		}
+	case version == "dev":
+		if !am.IsAppDevExist(appCode) {
+			return "", fmt.Errorf("app with Code %s does not exist", appCode)
+		}
+	default:
+		if !am.IsAppVersionExist(appCode, version) {
+			return "", fmt.Errorf("app version for Code %s does not exist", appCode)
+		}
 	}
 
-	//  读取配置，返回字符串
 	var config interface{}
 	var err error
 	if version == "" {
@@ -470,4 +384,96 @@ func (mm *MenuManager) GetMenuPage(appCode string, version string, menuCode stri
 		return "", fmt.Errorf("failed to read menu page: %w", err)
 	}
 	return config, nil
+}
+
+func collectMenuCodesDeep(menus []Menu, out map[string]struct{}) {
+	for _, m := range menus {
+		out[m.MenuCode] = struct{}{}
+		collectMenuCodesDeep(m.Children, out)
+	}
+}
+
+func appendChildDeep(menus []Menu, parentCode string, child Menu) ([]Menu, bool) {
+	for i := range menus {
+		if menus[i].MenuCode == parentCode {
+			menus[i].Children = append(menus[i].Children, child)
+			return menus, true
+		}
+		if len(menus[i].Children) > 0 {
+			updated, ok := appendChildDeep(menus[i].Children, parentCode, child)
+			if ok {
+				menus[i].Children = updated
+				return menus, true
+			}
+		}
+	}
+	return menus, false
+}
+
+func deleteMenuDeep(menus []Menu, menuCode string) ([]Menu, bool, error) {
+	for i, menu := range menus {
+		if menu.MenuCode == menuCode {
+			if len(menu.Children) > 0 {
+				return nil, false, fmt.Errorf("menu with Code %s has child menus, cannot delete", menuCode)
+			}
+			out := append(menus[:i], menus[i+1:]...)
+			return out, true, nil
+		}
+		if len(menu.Children) > 0 {
+			newChildren, found, err := deleteMenuDeep(menu.Children, menuCode)
+			if err != nil {
+				return nil, false, err
+			}
+			if found {
+				menus[i].Children = newChildren
+				return menus, true, nil
+			}
+		}
+	}
+	return menus, false, nil
+}
+
+func updateMenuDeep(menus []Menu, menuCode string, menuLabel, menuIcon string, hide bool, linkUrl string) ([]Menu, bool) {
+	for i := range menus {
+		if menus[i].MenuCode == menuCode {
+			if menuLabel != "" {
+				menus[i].MenuLabel = menuLabel
+			}
+			if menuIcon != "" {
+				menus[i].MenuIcon = menuIcon
+			}
+			if linkUrl != "" {
+				menus[i].LinkUrl = linkUrl
+			}
+			menus[i].Hide = hide
+			return menus, true
+		}
+		if len(menus[i].Children) > 0 {
+			updated, ok := updateMenuDeep(menus[i].Children, menuCode, menuLabel, menuIcon, hide, linkUrl)
+			if ok {
+				menus[i].Children = updated
+				return menus, true
+			}
+		}
+	}
+	return menus, false
+}
+
+func extractMenuByCode(menus []Menu, menuCode string) (newMenus []Menu, target Menu, found bool) {
+	for i, menu := range menus {
+		if menu.MenuCode == menuCode {
+			target = menu
+			newMenus = append(menus[:i], menus[i+1:]...)
+			return newMenus, target, true
+		}
+		if len(menu.Children) > 0 {
+			newChildren, t, ok := extractMenuByCode(menu.Children, menuCode)
+			if ok {
+				menu.Children = newChildren
+				menus[i] = menu
+				return menus, t, true
+			}
+		}
+	}
+	return menus, Menu{}, false
 }

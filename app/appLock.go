@@ -4,10 +4,9 @@ import (
 	"sync"
 )
 
-// AppLock 是一个全局可用的读写锁工具类
+// AppLock 按 appCode 分片互斥；使用 sync.Map 降低全局锁竞争。条目随应用数量增长，通常与应用规模同阶。
 type AppLock struct {
-	mu      sync.Mutex
-	rwLocks map[string]*sync.RWMutex
+	locks sync.Map // string -> *sync.RWMutex
 }
 
 var (
@@ -15,48 +14,34 @@ var (
 	once            sync.Once
 )
 
-// GetAppLock 返回唯一的 AppLock 实例
 func GetAppLock() *AppLock {
 	once.Do(func() {
-		appLockInstance = &AppLock{
-			rwLocks: make(map[string]*sync.RWMutex),
-		}
+		appLockInstance = &AppLock{}
 	})
 	return appLockInstance
 }
 
-// RLock 获取读锁
+func (al *AppLock) getMutex(appcode string) *sync.RWMutex {
+	v, _ := al.locks.LoadOrStore(appcode, &sync.RWMutex{})
+	return v.(*sync.RWMutex)
+}
+
 func (al *AppLock) RLock(appcode string) {
-	al.mu.Lock()
-	if _, exists := al.rwLocks[appcode]; !exists {
-		al.rwLocks[appcode] = &sync.RWMutex{}
-	}
-	al.mu.Unlock()
-
-	al.rwLocks[appcode].RLock()
+	al.getMutex(appcode).RLock()
 }
 
-// RUnlock 释放读锁
 func (al *AppLock) RUnlock(appcode string) {
-	if rwLock, exists := al.rwLocks[appcode]; exists {
-		rwLock.RUnlock()
+	if v, ok := al.locks.Load(appcode); ok {
+		v.(*sync.RWMutex).RUnlock()
 	}
 }
 
-// Lock 获取写锁
 func (al *AppLock) Lock(appcode string) {
-	al.mu.Lock()
-	if _, exists := al.rwLocks[appcode]; !exists {
-		al.rwLocks[appcode] = &sync.RWMutex{}
-	}
-	al.mu.Unlock()
-
-	al.rwLocks[appcode].Lock()
+	al.getMutex(appcode).Lock()
 }
 
-// Unlock 释放写锁
 func (al *AppLock) Unlock(appcode string) {
-	if rwLock, exists := al.rwLocks[appcode]; exists {
-		rwLock.Unlock()
+	if v, ok := al.locks.Load(appcode); ok {
+		v.(*sync.RWMutex).Unlock()
 	}
 }

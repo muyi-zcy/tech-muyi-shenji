@@ -34,3 +34,11 @@ func (c *BaseController) error(code string, message string, data interface{}) {
 	c.Data["json"] = &res
 	c.ServeJSON()
 }
+
+func (c *BaseController) invalidAppCode() {
+	c.error("00111050", "无效的应用编码", nil)
+}
+
+func (c *BaseController) invalidMenuCode() {
+	c.error("00111050", "无效的菜单编码", nil)
+}

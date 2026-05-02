@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"sync"
 	"tech-muyi-shenji/common"
@@ -91,14 +90,13 @@ func (am *AppManager) GetAppReleaseInfo(appCode string) (*App, error) {
 	return &app, nil
 }
 
+// CreateApp 创建开发态应用；请求中的 version 参数当前未使用，初始版本固定为 v0.0.1，后续由 Publish 等接口演进。
 func (am *AppManager) CreateApp(appCode string, appName string, version string, description string) (*App, error) {
 	appLock := GetAppLock()
 	appLock.Lock(appCode)
 	defer appLock.Unlock(appCode)
 
-	// appCode只允许包含数字、大小写字母、下划线、横杠,使用正则
-	valid := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(appCode)
-	if !valid {
+	if !ValidResourceCode(appCode) {
 		return nil, fmt.Errorf("appCode only allows numbers, lowercase letters, uppercase letters, underscores, and hyphens")
 	}
 
@@ -195,9 +193,10 @@ func (am *AppManager) Publish(appCode string, version string) error {
 	}
 	_, err = utils.CompareVersions(version, appInfo.Version)
 	if err != nil {
-		return fmt.Errorf(err.Error())
+		return fmt.Errorf("版本校验失败: %w", err)
 	}
 
+	// 将当前 dev 目录快照到 data/version/{appCode}.{当前 dev 版本号}，再把 dev 内 app.json 的版本字段更新为本次发布目标版本 version。
 	err = utils.CopyDirSrc(getAppDevRootPath(appCode), getAppReleaseRootPath(appCode))
 	if err != nil {
 		return fmt.Errorf("failed to publish app: %w", err)
@@ -240,15 +239,21 @@ func (am *AppManager) Rollback(appCode string, version string) error {
 	if !am.IsAppVersionExist(appCode, version) {
 		return fmt.Errorf("app version %s does not exist", version)
 	}
-	devAppInfo, _ := am.GetAppDevInfo(appCode)
+	devAppInfo, err := am.GetAppDevInfo(appCode)
+	if err != nil {
+		return fmt.Errorf("读取开发态应用失败: %w", err)
+	}
 	devVersion := devAppInfo.Version
 
-	err := utils.CopyDirSrc(getAppVersionRootPath(appCode, version), getAppDevRootPath(appCode))
+	err = utils.CopyDirSrc(getAppVersionRootPath(appCode, version), getAppDevRootPath(appCode))
 	if err != nil {
 		return fmt.Errorf("failed to rollback app: %w", err)
 	}
 
-	newDevAppInfo, _ := am.GetAppDevInfo(appCode)
+	newDevAppInfo, err := am.GetAppDevInfo(appCode)
+	if err != nil {
+		return fmt.Errorf("回滚后读取开发态应用失败: %w", err)
+	}
 	newDevAppInfo.Version = devVersion
 	err = utils.SaveJSONToFile(newDevAppInfo, getAppDevPath(appCode))
 	if err != nil {

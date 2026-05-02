@@ -171,13 +171,15 @@ func IsDirExist(path string) (bool, error) {
 	return info.IsDir(), nil
 }
 
-func RemoveFile(filePath string) {
+func RemoveFile(filePath string) error {
+	if filePath == "" {
+		return nil
+	}
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return
+		return nil
 	}
 	if err := os.Remove(filePath); err != nil {
-		fmt.Printf("删除文件失败: %v\n", err)
-		return
+		return fmt.Errorf("删除文件失败: %w", err)
 	}
-	fmt.Printf("文件已删除: %s\n", filePath)
+	return nil
 }
